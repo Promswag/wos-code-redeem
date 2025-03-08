@@ -3,6 +3,7 @@ import requests
 import time
 import pandas
 import asyncio
+from datetime import datetime
 from io import StringIO
 
 import discord
@@ -102,17 +103,22 @@ async def on_message(message):
 				await message.channel.send("Wesh ma poule!")
 	await bot.process_commands(message)
 
+@bot.event
+async def on_command_error(ctx, error):
+	print(f"{type(error).__name__}: {error}")
+
 @bot.tree.command(name="redeem", description="Redeem a code", extras=[{"name": "code", "required": True}])
 async def redeem(interaction: discord.Interaction, code: str):
-	await interaction.response.send_message(content=":white_check_mark:", ephemeral=True, delete_after=0)
+	print(interaction.user)
+	await interaction.response.defer()
 
 	if code is None:
-		print("Code missing")
+		await interaction.edit_original_response(content="Gift code missing!")
 		return
+	
 	channel = interaction.channel
-
 	if channel.id != int(env["CHANNEL_ID"]):
-		print("Wrong channel")
+		await interaction.edit_original_response(content="Wrong channel!")
 		return
 	
 	embed = discord.Embed(title=":gift: Gift code redeem processing...", color=discord.Color.yellow())
@@ -137,9 +143,10 @@ async def redeem(interaction: discord.Interaction, code: str):
 		if err == -1:
 			print(msg)
 			await REP.delete()
-			await channel.send(msg)
+			await interaction.edit_original_response(content=msg)
 			return
 		elif err == 0:
+			print(msg)
 			counter["error"] += 1
 		elif err == 1:
 			counter["success"] += 1
@@ -168,25 +175,46 @@ async def redeem(interaction: discord.Interaction, code: str):
 	)
 	embed.set_field_at(0, name="", value=formated_message)
 	await channel.send(embed=embed)
+	await interaction.edit_original_response(content="Gift code redeem completed")
 
-@bot.tree.command(name="add", description="Adds a lists of ids (separated by spaces) to the csv file", extras=[{"name": "ids", "required": True}])
+@bot.tree.command(name="add", description="Adds the given ID(s) to the redeem list", extras=[{"name": "ID(s)", "required": True}])
 async def add(interaction: discord.Interaction, ids: str):
-	await interaction.response.send_message(content=":white_check_mark:", ephemeral=True, delete_after=0)
-	thread = interaction.channel.get_thread(int(env["THREAD_ID2"]))
-	message = [message async for message in thread.history(limit=1, oldest_first=True)][0]
-	ids = pandas.DataFrame(index=ids.split(' '))
+	print(interaction.user)
+	await interaction.response.defer(ephemeral=True)
 
+	try:
+		ids = [int(id) for id in ids.split(' ')]
+	except:
+		await interaction.edit_original_response(content="ID(s) must be digits only")
+		return
+
+	thread = interaction.channel.get_thread(int(env["THREAD_ID"]))
+	message = [message async for message in thread.history(limit=1, oldest_first=True)][0]
+
+	await interaction.edit_original_response(content="Inserting new ID(s)...")
 	if message.attachments:
 		url = message.attachments[0].url
 		rep = requests.get(url)
 		buffer_in = StringIO(rep.text)
 		df = pandas.read_csv(buffer_in, index_col='ID', skip_blank_lines=True, comment='#')
 
-		df = pandas.concat([df, ids])
+		ids = [id for id in ids if id not in df.index]
+		if len(ids) == 0:
+			await interaction.edit_original_response(content="No new ID(s) found, aborting")
+			return
+		
+		df.to_csv("backup/" + datetime.now().strftime("%d-%m-%Y_%H-%M-%S"), index_label='ID')
+		df = pandas.concat([df, pandas.DataFrame(index=ids)])
 		with StringIO() as buffer_out:
 			df.to_csv(buffer_out, index=True, index_label='ID')
 			buffer_out.seek(0)
-			await thread.send(file=discord.File(buffer_out, filename="ID.csv"))
+			try:
+				await thread.send(file=discord.File(buffer_out, filename="ID.csv"))
+			except Exception as error:
+				print(f"{type(error).__name__}: {error}")
+				await interaction.edit_original_response(content=f"{type(error).__name__}: {error}")
+				return
+			await interaction.edit_original_response(content="New ID(s) succesfully inserted!")
 			await message.delete()
 
 bot.run(env["DISCORD_TOKEN"])
